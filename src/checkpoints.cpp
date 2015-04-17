@@ -192,6 +192,8 @@ namespace Checkpoints
     uint256 AutoSelectSyncCheckpoint()
     {
         const CBlockIndex *pindex = pindexBest;
+		if(pindex->nTime > FORK_TIME)
+			nTargetSpacing = nTargetSpacing2; 
         // Search backward for a block within max span and maturity window
         while (pindex->pprev && (pindex->GetBlockTime() + nCheckpointSpan * nTargetSpacing > pindexBest->GetBlockTime() || pindex->nHeight + nCheckpointSpan > pindexBest->nHeight))
             pindex = pindex->pprev;

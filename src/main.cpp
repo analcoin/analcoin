@@ -44,6 +44,7 @@ CBigNum bnProofOfWorkLimitTestNet(~uint256(0) >> 16);
 
 static const int64_t nTargetTimespan = 60 * 60;  // Analcoin - every hour
 unsigned int nTargetSpacing = 1 * 40; // Analcoin - 40 seconds
+unsigned int nTargetSpacing2 = 60; // New block every 60 seconds after fork
 static const int64_t nInterval = nTargetTimespan / nTargetSpacing;
 
 static const int64_t nDiffChangeTarget = 1;
@@ -1001,21 +1002,18 @@ int64_t GetProofOfWorkReward(int64_t nFees)
 }
 
 // miner's coin stake reward
-int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
+int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees, unsigned int nTime)
 {
-    int64_t nSubsidy = nCoinAge * COIN_YEAR_REWARD * 25 / (365 * 25 + 8); //2.5% per year interest compounded everytime we stake
-    
-    //first divide what we get by 100000000 so we don't have to write COIN all the time after it.
-    //we multiply it by 100000000 later. 
-    nSubsidy /= 100000000;
-    // 3 coins extra stake reward to give staking incentive 
-    nSubsidy += 3; 
-
-        //need more coins in the input to get the bigger rewards 
+    int64_t nSubsidy;
+	
+	if(nTime > FORK_TIME)
+		nSubsidy = nCoinAge * COIN_YEAR_REWARD_2 / 365;
+	else
+	{
+		int64_t nSubsidy = nCoinAge * COIN_YEAR_REWARD * 25 / (365 * 25 + 8); //2.5% per year interest compounded everytime we stake
+		nSubsidy /= 100000000;
+		nSubsidy += 3; 
         if (nSubsidy < 10.010) nSubsidy = 0.010; 
-        //average up to nearest 1.000 to reward staking
-        //but minus .001 so it does not trip over itself
-        //in this part
         if (nSubsidy >= 10.010 && nSubsidy < 11.000) nSubsidy = 10.999; 
         if (nSubsidy >= 11.000 && nSubsidy < 12.000) nSubsidy = 11.999; 
         if (nSubsidy >= 12.000 && nSubsidy < 13.000) nSubsidy = 12.999; 
@@ -1026,16 +1024,10 @@ int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
         if (nSubsidy >= 17.000 && nSubsidy < 18.000) nSubsidy = 17.999;
         if (nSubsidy >= 18.000 && nSubsidy < 19.000) nSubsidy = 18.999;
         if (nSubsidy >= 19.000 && nSubsidy < 20.000) nSubsidy = 20.000;
-        //we need 480 blocks found every 8 hours
-        //so put a limit on the maximum reward to
-        //give people incentive to split 
-        //up their inputs if they have a ton of coins 
-        //that would have gave over 10.000 coin reward
         if (nSubsidy >= 20.000) nSubsidy = 20.000;
-        //multiply nSubsidy by 100000000
         nSubsidy *= COIN;
-
-
+	}
+	
     if (fDebug && GetBoolArg("-printcreation"))
         printf("GetProofOfStakeReward(): create=%s nCoinAge=%"PRId64"\n", FormatMoney(nSubsidy).c_str(), nCoinAge);
     
@@ -1092,7 +1084,9 @@ unsigned int ComputeMinWork(unsigned int nBase, int64_t nTime)
 }
 unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfStake)
 {
-
+	if(pindexLast->nTime > FORK_TIME)
+		nTargetSpacing = nTargetSpacing2; // fork the block target
+	
 	CBigNum bnTargetLimit = fProofOfStake ? bnProofOfStakeLimit : bnProofOfWorkLimit;
 
     if (pindexLast == NULL)
@@ -1625,7 +1619,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
         if (!vtx[1].GetCoinAge(txdb, nCoinAge))
             return error("ConnectBlock() : %s unable to get coin age for coinstake", vtx[1].GetHash().ToString().substr(0,10).c_str());
 
-        int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
+        int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees, pindex->nTime);
 
         if (nStakeReward > nCalculatedStakeReward)
             return DoS(100, error("ConnectBlock() : coinstake pays too much(actual=%"PRId64" vs calculated=%"PRId64")", nStakeReward, nCalculatedStakeReward));
@@ -2062,7 +2056,7 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
         return DoS(50, error("CheckBlock() : proof of work failed"));
 
     // Check timestamp
-    if (GetBlockTime() > FutureDrift(GetAdjustedTime()))
+    if (GetBlockTime() > GetAdjustedTime() + GetClockDrift(GetAdjustedTime()))
         return error("CheckBlock() : block timestamp too far in the future");
 
     // First transaction must be coinbase, the rest must not be
@@ -2073,7 +2067,7 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
             return DoS(100, error("CheckBlock() : more than one coinbase"));
 
     // Check coinbase timestamp
-    if (GetBlockTime() > FutureDrift((int64_t)vtx[0].nTime))
+    if (GetBlockTime() > (int64_t)vtx[0].nTime + GetClockDrift((int64_t)vtx[0].nTime))
         return DoS(50, error("CheckBlock() : coinbase timestamp is too early"));
 
     if (IsProofOfStake())
@@ -2160,7 +2154,7 @@ bool CBlock::AcceptBlock()
         return DoS(100, error("AcceptBlock() : incorrect %s", IsProofOfWork() ? "proof-of-work" : "proof-of-stake"));
 
     // Check timestamp against prev
-    if (GetBlockTime() <= pindexPrev->GetPastTimeLimit() || FutureDrift(GetBlockTime()) < pindexPrev->GetBlockTime())
+    if (GetBlockTime() <= pindexPrev->GetPastTimeLimit() || GetBlockTime() + GetClockDrift(GetBlockTime()) < pindexPrev->GetBlockTime())
         return error("AcceptBlock() : block's timestamp is too early");
 
     // Check that all transactions are finalized
@@ -2384,13 +2378,13 @@ bool CBlock::SignBlock(CWallet& wallet, int64_t nFees)
     {
         if (wallet.CreateCoinStake(wallet, nBits, nSearchTime-nLastCoinStakeSearchTime, nFees, txCoinStake, key))
         {
-            if (txCoinStake.nTime >= max(pindexBest->GetPastTimeLimit()+1, PastDrift(pindexBest->GetBlockTime())))
+            if (txCoinStake.nTime >= max(pindexBest->GetPastTimeLimit()+1, pindexBest->GetBlockTime() - GetClockDrift(pindexBest->GetBlockTime())))
             {
                 // make sure coinstake would meet timestamp protocol
                 //    as it would be the same as the block timestamp
                 vtx[0].nTime = nTime = txCoinStake.nTime;
                 nTime = max(pindexBest->GetPastTimeLimit()+1, GetMaxTransactionTime());
-                nTime = max(GetBlockTime(), PastDrift(pindexBest->GetBlockTime()));
+                nTime = max(GetBlockTime(), pindexBest->GetBlockTime() + GetClockDrift(pindexBest->GetBlockTime()));
 
                 // we have to make sure that we have no future timestamps in
                 //    our transactions set
@@ -2985,7 +2979,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
         if (!pfrom->fClient && !pfrom->fOneShot &&
             (pfrom->nStartingHeight > (nBestHeight - 144)) &&
             (pfrom->nVersion < NOBLKS_VERSION_START ||
-             pfrom->nVersion >= NOBLKS_VERSION_END) &&
+             pfrom->nVersion >= GetTime() < FORK_TIME ? NOBLKS_VERSION_END : NOBLKS_VERSION_END_FORK) &&
              (nAskedForBlocks < 1 || vNodes.size() <= 1))
         {
             nAskedForBlocks++;
